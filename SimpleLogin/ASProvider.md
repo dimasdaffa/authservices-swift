@@ -1,0 +1,476 @@
+# Apple's Authentication Services: Concepts, Analogies, and HIG Rules
+
+**Part 1 of 2** · iOS 17+ · Swift 6 · Xcode 16
+
+---
+
+## 1. Framework Architecture Overview
+
+`AuthenticationServices` is not an authentication engine. It is a **delegation surface**: a unified API through which your app hands identity verification to the iOS system layer, the Secure Enclave, and Apple's identity servers. Your app never touches raw credentials. It issues *requests*, the OS presents system-controlled UI, hardware performs cryptographic operations, and your app receives *attestations*.
+
+This architecture enforces a hard security boundary: the app process cannot intercept, modify, or spoof the authentication dialog. The system owns the entire credential lifecycle.
+
+### The Four Core Flows
+
+| Flow | Protocol | Credential Type | Storage Domain |
+| --- | --- | --- | --- |
+| **Apple ID Native Auth** | Apple's proprietary OAuth 2.0 | `ASAuthorizationAppleIDCredential` (JWT identity token, relay email) | iCloud Keychain (synced) |
+| **Passkeys (FIDO2/WebAuthn)** | CTAP2 / WebAuthn | `ASAuthorizationPlatformPublicKeyCredentialAssertion` (public-key pair) | iCloud Keychain (synced, E2E encrypted) |
+| **Web OAuth Delegation** | OAuth 2.0 / OpenID Connect | Authorization code via callback URL | Ephemeral browser session (no persistence by default) |
+| **Password AutoFill** | None (keychain query) | `ASPasswordCredential` (username + password) | iCloud Keychain / local Keychain |
+
+Each flow converges on the same delegate pattern: construct an `ASAuthorizationController`, attach requests, and implement `ASAuthorizationControllerDelegate` to receive the result. The system decides which UI to present (biometric prompt, passkey sheet, Safari view controller, or keyboard AutoFill bar) based on the request type.
+
+---
+
+## 2. Production Architecture: Unified Onboarding Hub
+
+In production apps, users expect a single, unified sign-in screen that offers traditional email entry alongside one-tap social and biometric options.
+
+We can build a clean, native screen while isolating each flow's business logic inside a Feature-Driven MVVM structure (`Features/AppleIDLogin`, `Features/PasskeyAuth`, etc.) using Swift 6 `@Observable` ViewModels.
+
+```text
+SimpleLogin/
+├── App/
+│   ├── AuthState.swift
+│   └── SimpleLoginApp.swift
+├── Features/
+│   ├── AppleIDLogin/        (AppleSignInView & AppleSignInViewModel)
+│   ├── PasskeyAuth/         (PasskeyViewModel)
+│   ├── PasswordAutoFill/    (PasswordAutoFillViewModel)
+│   └── WebOAuth/            (WebOAuthViewModel)
+└── Views/
+    └── UnifiedOnboardingView.swift  (Production Assembly View)
+
+```
+
+---
+
+### Shared State (`AuthState.swift`)
+
+```swift
+import AuthenticationServices
+import SwiftUI
+
+@Observable
+final class AuthState {
+    var userIdentifier: String?
+    var displayName: String?
+    var email: String?
+    var identityToken: String?
+    var isAuthenticated: Bool = false
+    var errorMessage: String?
+
+    func reset() {
+        userIdentifier = nil
+        displayName = nil
+        email = nil
+        identityToken = nil
+        isAuthenticated = false
+        errorMessage = nil
+    }
+}
+
+```
+
+---
+
+### Feature ViewModels
+
+```swift
+// MARK: - Features/AppleIDLogin/AppleSignInViewModel.swift
+
+@Observable
+@MainActor
+final class AppleSignInViewModel {
+    let authState: AuthState
+
+    init(authState: AuthState) {
+        self.authState = authState
+    }
+
+    func configureRequest(_ request: ASAuthorizationAppleIDRequest) {
+        request.requestedScopes = [.fullName, .email]
+    }
+
+    func handleResult(_ result: Result<ASAuthorization, Error>) {
+        switch result {
+        case .success(let authorization):
+            guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else { return }
+            authState.userIdentifier = credential.user
+
+            // CRITICAL: fullName and email are ONLY delivered on first authorization.
+            if let nameComponents = credential.fullName {
+                authState.displayName = PersonNameComponentsFormatter
+                    .localizedString(from: nameComponents, style: .default)
+            }
+            authState.email = credential.email
+
+            if let tokenData = credential.identityToken,
+               let tokenString = String(data: tokenData, encoding: .utf8) {
+                authState.identityToken = tokenString
+            }
+
+            authState.isAuthenticated = true
+
+        case .failure(let error):
+            let nsError = error as NSError
+            if nsError.domain == ASAuthorizationError.errorDomain,
+               nsError.code == ASAuthorizationError.canceled.rawValue { return }
+            authState.errorMessage = error.localizedDescription
+        }
+    }
+}
+
+// MARK: - Features/PasskeyAuth/PasskeyViewModel.swift
+
+@Observable
+final class PasskeyViewModel: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
+    private let relyingPartyIdentifier = "example.com"
+    var errorMessage: String?
+
+    func signInWithPasskey() {
+        let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: relyingPartyIdentifier)
+        let challenge = Data(repeating: 0, count: 32) // In production, fetch from server
+        let request = provider.createCredentialAssertionRequest(challenge: challenge)
+
+        let controller = ASAuthorizationController(authorizationRequests: [request])
+        controller.delegate = self
+        controller.presentationContextProvider = self
+        controller.performRequests()
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {}
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {}
+
+    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+              let window = scene.windows.first else { fatalError("No window scene.") }
+        return window
+    }
+}
+
+// MARK: - Features/WebOAuth/WebOAuthViewModel.swift
+
+@Observable
+final class WebOAuthViewModel: NSObject, ASWebAuthenticationPresentationContextProviding {
+    var authorizationCode: String?
+    var errorMessage: String?
+
+    func startOAuthFlow() {
+        guard let authURL = URL(string: "https://github.com/login/oauth/authorize?client_id=YOUR_CLIENT_ID") else { return }
+
+        let session = ASWebAuthenticationSession(url: authURL, callbackURLScheme: "myapp") { callbackURL, error in
+            if let callbackURL,
+               let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
+               let code = components.queryItems?.first(where: { $0.name == "code" })?.value {
+                self.authorizationCode = code
+            }
+        }
+        session.presentationContextProvider = self
+        session.start()
+    }
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+              let window = scene.windows.first else { fatalError("No window scene.") }
+        return window
+    }
+}
+
+```
+
+---
+
+### The Production View (`UnifiedOnboardingView.swift`)
+
+Here is how all four features assemble into a clean, native iOS layout:
+
+```swift
+import AuthenticationServices
+import SwiftUI
+
+struct UnifiedOnboardingView: View {
+    @State private var authState = AuthState()
+    @State private var passkeyViewModel = PasskeyViewModel()
+    @State private var oauthViewModel = WebOAuthViewModel()
+    @State private var username = ""
+    @State private var password = ""
+
+    var body: some View {
+        ScrollView {
+            VStack(spacing: 0) {
+                headerSection
+                    .padding(.top, 60)
+                    .padding(.bottom, 32)
+
+                if authState.isAuthenticated {
+                    authenticatedSection
+                } else {
+                    loginFormSection
+                        .padding(.horizontal, 16)
+
+                    dividerLine
+                        .padding(.horizontal, 32)
+                        .padding(.vertical, 24)
+
+                    socialButtonsSection
+                        .padding(.horizontal, 16)
+                }
+            }
+            .padding(.horizontal, 16)
+        }
+        .background(Color(UIColor.systemGroupedBackground))
+    }
+
+    // MARK: - Subviews
+
+    private var headerSection: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "lock.shield.fill")
+                .font(.system(size: 56))
+                .foregroundStyle(.blue)
+
+            Text("Welcome Back")
+                .font(.title.bold())
+
+            Text("Sign in to continue")
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+    }
+
+    private var loginFormSection: some View {
+        VStack(spacing: 12) {
+            TextField("Username or Email", text: $username)
+                .textContentType(.username)
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .padding()
+                .background(Color(UIColor.secondarySystemGroupedBackground))
+                .cornerRadius(10)
+
+            SecureField("Password", text: $password)
+                .textContentType(.password)
+                .padding()
+                .background(Color(UIColor.secondarySystemGroupedBackground))
+                .cornerRadius(10)
+
+            Button {
+                // Perform traditional login
+            } label: {
+                Text("Sign In")
+                    .font(.headline)
+                    .foregroundStyle(.white)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+                    .background(Color.blue)
+                    .cornerRadius(25)
+            }
+        }
+    }
+
+    private var dividerLine: some View {
+        HStack(spacing: 12) {
+            Rectangle().fill(Color.secondary.opacity(0.3)).frame(height: 1)
+            Text("or").font(.caption).foregroundStyle(.secondary)
+            Rectangle().fill(Color.secondary.opacity(0.3)).frame(height: 1)
+        }
+    }
+
+    private var socialButtonsSection: some View {
+        VStack(spacing: 12) {
+            SignInWithAppleButton(.signIn) { request in
+                AppleSignInViewModel(authState: authState).configureRequest(request)
+            } onCompletion: { result in
+                AppleSignInViewModel(authState: authState).handleResult(result)
+            }
+            .signInWithAppleButtonStyle(.black)
+            .frame(height: 50)
+            .cornerRadius(25)
+
+            Button {
+                passkeyViewModel.signInWithPasskey()
+            } label: {
+                Label("Continue with Passkey", systemImage: "key.fill")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+            }
+            .buttonStyle(.bordered)
+            .tint(.blue)
+            .background(Color(UIColor.secondarySystemGroupedBackground))
+            .cornerRadius(25)
+
+            Button {
+                oauthViewModel.startOAuthFlow()
+            } label: {
+                Label("Continue with GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 50)
+            }
+            .buttonStyle(.bordered)
+            .tint(.blue)
+            .background(Color(UIColor.secondarySystemGroupedBackground))
+            .cornerRadius(25)
+        }
+    }
+
+    private var authenticatedSection: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 64))
+                .foregroundStyle(.green)
+
+            Text("Authenticated!")
+                .font(.title2.bold())
+
+            Button("Sign Out", role: .destructive) {
+                authState.reset()
+            }
+        }
+    }
+}
+
+```
+
+---
+
+## 3. Technical Concepts & Mental Models
+
+### Biometrics vs. Account Relationship
+
+Developers frequently conflate `LAContext` (LocalAuthentication) with `ASAuthorizationAppleIDCredential` (AuthenticationServices). They operate at different layers of the iOS security stack.
+
+| Dimension | `LAContext` (LocalAuthentication) | `ASAuthorizationAppleIDCredential` (AuthenticationServices) |
+| --- | --- | --- |
+| **Mental Model** | 🔐 **Local Gatekeeper**: "Prove you hold this device right now" | 🛂 **Global Passport**: "Prove you own this Apple ID account" |
+| **What It Verifies** | Local biometric or passcode ownership | Apple ID identity via iCloud |
+| **Scope** | Current device only | All devices signed into the Apple ID |
+| **Cryptographic Root** | Secure Enclave (device-bound key) | Apple Identity Service (iCloud-synced token) |
+| **Credential Type** | Boolean (pass/fail) | `ASAuthorizationAppleIDCredential` with JWT, user ID, email |
+| **Network Required** | No | Yes (initial authorization) |
+| **Survives Device Wipe** | No: Secure Enclave keys are destroyed | Yes: credential is tied to Apple ID account |
+| **Returns Identity** | No: confirms local presence only | Yes: returns stable `user` identifier, optional email/name |
+
+**Key distinction**: `LAContext` answers *"Is an authorized user holding this phone right now?"*, while `ASAuthorizationAppleIDCredential` answers *"Which user is this across Apple's entire ecosystem?"*
+
+### Authorizing Identity: OAuth vs. SSO
+
+#### OAuth: "The Bar ID Analogy"
+
+OAuth is a bouncer checking your ID at a bar entrance.
+
+1. You approach the bar (the app).
+2. The bouncer asks for your ID (redirects to identity provider).
+3. You show your driver's license (authenticate with Google/GitHub).
+4. The bouncer verifies your age and lets you in (receives an authorization code).
+5. The bouncer **does not** keep a copy or make a new ID for you. The bar next door must check you independently.
+
+#### SSO: "The Festival Wristband Analogy"
+
+SSO is getting a wristband at a music festival entrance.
+
+1. You show your ticket at the main gate (authenticate once with identity provider).
+2. Staff gives you a wristband (the IdP issues a session token/assertion).
+3. Every stage, food vendor, and VIP tent inspects your wristband and grants access without re-checking your ticket.
+
+**Sign in with Apple operates as a hybrid OAuth-SSO.** It uses OAuth 2.0 protocol mechanics (authorization code grant, token exchange) while providing an SSO experience to the user: a single Apple ID login grants access across all their devices via iCloud.
+
+---
+
+## 4. HIG Rules & App Store Review Guidelines
+
+These five rules represent the most common causes of App Store rejection for authentication implementations.
+
+### Rule 1: Guideline 4.8 (Equivalence Rule)
+
+> *"Apps that exclusively use a third-party or social login service (such as Facebook, Google, Twitter, LinkedIn, Amazon, or WeChat) to set up or authenticate the user's account must also offer Sign in with Apple as an equivalent option."*
+
+* If your app includes **any** social login button, Sign in with Apple must be offered alongside it with equal visual prominence and functional parity.
+* Standard email + password login does **not** trigger this rule. The moment you add a third-party social provider, the requirement activates.
+
+### Rule 2: Native Button Integrity
+
+`SignInWithAppleButton` is a system-rendered control and must be used as provided.
+
+* ❌ **Prohibited**: Custom button shapes, overlaying text/icons, altering corner radii via hacks, or custom-drawn buttons mimicking Apple's style.
+* ✅ **Allowed**: `.signInWithAppleButtonStyle(.black | .white | .whiteOutline)`, `.signInWithAppleButtonLabel(.signIn | .signUp | .continue)`, and height frame adjustments (minimum 30pt, recommended 44pt+).
+
+### Rule 3: First-Time Payload Retention
+
+`ASAuthorizationAppleIDCredential.fullName` and `.email` are delivered **only once** on the user's initial authorization. Every subsequent call returns `nil`.
+
+Your backend must store these fields immediately alongside the stable `credential.user` identifier. If payload data is lost during development, revoke access via **Settings → Apple ID → Sign-In & Security → Sign in with Apple → [Your App] → Stop Using Apple ID** to trigger a fresh grant.
+
+### Rule 4: Mandatory Account Deletion
+
+Any app supporting account creation must provide an in-app account deletion flow. For Sign in with Apple, this requires two actions:
+
+1. Revoke the token via Apple's revocation endpoint (`POST [https://appleid.apple.com/auth/revoke](https://appleid.apple.com/auth/revoke)`).
+2. Delete the user record on your server.
+
+```swift
+func revokeAppleIDToken(_ refreshToken: String) async throws {
+    let url = URL(string: "https://appleid.apple.com/auth/revoke")!
+    var request = URLRequest(url: url)
+    request.httpMethod = "POST"
+    request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+
+    let body = [
+        "client_id": "com.yourcompany.yourapp",
+        "client_secret": generateClientSecret(), // Server-generated JWT
+        "token": refreshToken,
+        "token_type_hint": "refresh_token"
+    ]
+    request.httpBody = body.map { "\($0.key)=\($0.value)" }.joined(separator: "&").data(using: .utf8)
+
+    let (_, response) = try await URLSession.shared.data(for: request)
+    guard let httpResponse = response as? HTTPURLResponse, httpResponse.statusCode == 200 else {
+        throw RevocationError.serverRejected
+    }
+}
+
+```
+
+> **Security Warning**: `generateClientSecret()` must execute on your backend. Never embed your Sign in with Apple private key (`.p8`) in an app binary.
+
+### Rule 5: System Terminology Compliance
+
+Apple's Human Interface Guidelines require exact product terminology for biometric methods.
+
+| ✅ Correct | ❌ Incorrect |
+| --- | --- |
+| Face ID | "facial recognition", "face scan", "biometrics" |
+| Touch ID | "fingerprint", "biometric scan", "thumbprint" |
+| Optic ID | "eye scan", "iris recognition" |
+
+Query `LAContext().biometryType` at runtime to format UI strings dynamically:
+
+```swift
+func biometricDisplayName() -> String {
+    let context = LAContext()
+    var error: NSError?
+    context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+
+    return switch context.biometryType {
+    case .faceID: "Face ID"
+    case .touchID: "Touch ID"
+    case .opticID: "Optic ID"
+    case .none: "Passcode"
+    @unknown default: "Device Authentication"
+    }
+}
+
+```
+
+---
+
+## What's Next
+
+**Part 2: Storage Architecture & ASProvider Execution Models** will explore the low-level systems beneath these APIs: how the Secure Enclave generates asymmetric key pairs for passkeys, AES-256-GCM encryption boundaries around Keychain items, sandbox isolation between `kSecAttrAccessGroup` domains, and the `authd` system daemon execution pipeline.
+
+---
+
+*Questions or feedback on implementing `AuthenticationServices`? Let's discuss in the responses below.*
