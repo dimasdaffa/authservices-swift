@@ -1,3 +1,6 @@
+
+---
+
 # Apple's Authentication Services: Concepts, Analogies, and HIG Rules
 
 **Part 1 of 2** · iOS 17+ · Swift 6 · Xcode 16
@@ -23,24 +26,19 @@ Each flow converges on the same delegate pattern: construct an `ASAuthorizationC
 
 ---
 
-## 2. Production Architecture: Unified Onboarding Hub
+## 2. Implementation & Required Setup for Each ASProvider
 
-In production apps, users expect a single, unified sign-in screen that offers traditional email entry alongside one-tap social and biometric options.
-
-We can build a clean, native screen while isolating each flow's business logic inside a Feature-Driven MVVM structure (`Features/AppleIDLogin`, `Features/PasskeyAuth`, etc.) using Swift 6 `@Observable` ViewModels.
+Rather than dumping all logic into a single monolithic view, production iOS apps isolate each `ASProvider` flow into its own Feature directory (`Features/AppleIDLogin`, `Features/PasskeyAuth`, etc.) using Swift 6 `@Observable` ViewModels.
 
 ```text
 SimpleLogin/
 ├── App/
-│   ├── AuthState.swift
-│   └── SimpleLoginApp.swift
-├── Features/
-│   ├── AppleIDLogin/        (AppleSignInView & AppleSignInViewModel)
-│   ├── PasskeyAuth/         (PasskeyViewModel)
-│   ├── PasswordAutoFill/    (PasswordAutoFillViewModel)
-│   └── WebOAuth/            (WebOAuthViewModel)
-└── Views/
-    └── UnifiedOnboardingView.swift  (Production Assembly View)
+│   └── AuthState.swift
+└── Features/
+    ├── AppleIDLogin/        (Sign in with Apple)
+    ├── PasskeyAuth/         (FIDO2 / WebAuthn)
+    ├── WebOAuth/            (ASWebAuthenticationSession)
+    └── PasswordAutoFill/    (iCloud Keychain AutoFill)
 
 ```
 
@@ -75,7 +73,9 @@ final class AuthState {
 
 ---
 
-### Feature ViewModels
+### 2.1 Native Sign in with Apple (`ASAuthorizationAppleIDProvider`)
+
+#### Code Implementation
 
 ```swift
 // MARK: - Features/AppleIDLogin/AppleSignInViewModel.swift
@@ -122,16 +122,54 @@ final class AppleSignInViewModel {
     }
 }
 
+// MARK: - Features/AppleIDLogin/AppleSignInView.swift
+
+struct AppleSignInView: View {
+    let viewModel: AppleSignInViewModel
+
+    var body: some View {
+        SignInWithAppleButton(
+            .signIn,
+            onRequest: viewModel.configureRequest,
+            onCompletion: viewModel.handleResult
+        )
+        .signInWithAppleButtonStyle(.black)
+        .frame(height: 50)
+        .cornerRadius(25)
+    }
+}
+
+```
+
+#### Required Setup & Configuration
+
+1. **Xcode Capability**: Select your App Target $\rightarrow$ **Signing & Capabilities** $\rightarrow$ Click **+ Capability** $\rightarrow$ Add **Sign In with Apple**.
+2. **App ID Registration**: Ensure your Bundle Identifier is explicitly registered in the [Apple Developer Portal](https://developer.apple.com) under **Identifiers** with the **Sign In with Apple** capability enabled.
+3. **Server Validation**: The `identityToken` returned by Apple is a signed JWT. Your backend must fetch Apple's public key from `[https://appleid.apple.com/auth/keys](https://appleid.apple.com/auth/keys)` to verify the token signature, issuer (`iss`), and audience (`aud`).
+
+---
+
+### 2.2 Passkeys (`ASAuthorizationPlatformPublicKeyCredentialProvider`)
+
+#### Code Implementation
+
+```swift
 // MARK: - Features/PasskeyAuth/PasskeyViewModel.swift
 
 @Observable
-final class PasskeyViewModel: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
-    private let relyingPartyIdentifier = "example.com"
+final class PasskeyViewModel: NSObject, 
+    ASAuthorizationControllerDelegate, 
+    ASAuthorizationControllerPresentationContextProviding 
+{
+    private let relyingPartyIdentifier = "yourdomain.com"
     var errorMessage: String?
 
     func signInWithPasskey() {
-        let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(relyingPartyIdentifier: relyingPartyIdentifier)
-        let challenge = Data(repeating: 0, count: 32) // In production, fetch from server
+        let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(
+            relyingPartyIdentifier: relyingPartyIdentifier
+        )
+        // Challenge MUST be fetched from your server in production
+        let challenge = fetchChallengeFromServer()
         let request = provider.createCredentialAssertionRequest(challenge: challenge)
 
         let controller = ASAuthorizationController(authorizationRequests: [request])
@@ -140,200 +178,171 @@ final class PasskeyViewModel: NSObject, ASAuthorizationControllerDelegate, ASAut
         controller.performRequests()
     }
 
-    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {}
-    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {}
+    func authorizationController(
+        controller: ASAuthorizationController, 
+        didCompleteWithAuthorization authorization: ASAuthorization
+    ) {
+        if let assertion = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion {
+            // Send assertion.signature and rawAuthenticatorData to backend for cryptographic verification
+        }
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        let nsError = error as NSError
+        if nsError.domain == ASAuthorizationError.errorDomain,
+           nsError.code == ASAuthorizationError.canceled.rawValue { return }
+        errorMessage = error.localizedDescription
+    }
 
     func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
-              let window = scene.windows.first else { fatalError("No window scene.") }
+              let window = scene.windows.first else { fatalError("No window scene available.") }
         return window
+    }
+
+    private func fetchChallengeFromServer() -> Data {
+        var bytes = [UInt8](repeating: 0, count: 32)
+        _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+        return Data(bytes)
     }
 }
 
+```
+
+#### Required Setup & Configuration
+
+1. **Xcode Capability**: Select App Target $\rightarrow$ **Signing & Capabilities** $\rightarrow$ Add **Associated Domains**.
+2. **Domain Entry**: Add an entry under Domains formatted as:
+```text
+webcredentials:yourdomain.com
+
+```
+
+
+3. **Server AASA File**: Host an `apple-app-site-association` file on your server over HTTPS at `[https://yourdomain.com/.well-known/apple-app-site-association](https://yourdomain.com/.well-known/apple-app-site-association)`:
+```json
+{
+  "webcredentials": {
+    "apps": [ "TEAMID.com.yourcompany.yourapp" ]
+  }
+}
+
+```
+
+
+4. **Relying Party ID**: Ensure `relyingPartyIdentifier` in your ViewModel matches `yourdomain.com` exactly.
+
+---
+
+### 2.3 Third-Party Web OAuth (`ASWebAuthenticationSession`)
+
+#### Code Implementation
+
+```swift
 // MARK: - Features/WebOAuth/WebOAuthViewModel.swift
 
 @Observable
 final class WebOAuthViewModel: NSObject, ASWebAuthenticationPresentationContextProviding {
     var authorizationCode: String?
     var errorMessage: String?
+    
+    private let clientID = "YOUR_GITHUB_CLIENT_ID"
+    private let callbackScheme = "myapp"
 
     func startOAuthFlow() {
-        guard let authURL = URL(string: "https://github.com/login/oauth/authorize?client_id=YOUR_CLIENT_ID") else { return }
+        guard let authURL = URL(string: "https://github.com/login/oauth/authorize?client_id=\(clientID)&redirect_uri=\(callbackScheme)://oauth-callback&scope=user:email") else { return }
 
-        let session = ASWebAuthenticationSession(url: authURL, callbackURLScheme: "myapp") { callbackURL, error in
+        let session = ASWebAuthenticationSession(
+            url: authURL, 
+            callbackURLScheme: callbackScheme
+        ) { callbackURL, error in
+            if let error {
+                let nsError = error as NSError
+                if nsError.domain == ASWebAuthenticationSessionError.errorDomain,
+                   nsError.code == ASWebAuthenticationSessionError.canceledLogin.rawValue { return }
+                self.errorMessage = error.localizedDescription
+                return
+            }
+
             if let callbackURL,
                let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
                let code = components.queryItems?.first(where: { $0.name == "code" })?.value {
                 self.authorizationCode = code
+                // Send code to backend to exchange for an access token
             }
         }
+        
         session.presentationContextProvider = self
         session.start()
     }
 
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
-              let window = scene.windows.first else { fatalError("No window scene.") }
+              let window = scene.windows.first else { fatalError("No window scene available.") }
         return window
     }
 }
 
 ```
 
+#### Required Setup & Configuration
+
+1. **OAuth Application**: Register an OAuth app in your provider's developer console (e.g., GitHub Developer Settings). Set the callback URL to `myapp://oauth-callback`.
+2. **Info.plist Custom Scheme**: In Xcode $\rightarrow$ App Target $\rightarrow$ **Info** tab $\rightarrow$ Expand **URL Types** $\rightarrow$ Add a new item and set **URL Schemes** to `myapp`.
+3. **Client ID**: Copy the generated Client ID from your OAuth provider into `clientID`. Never embed your `client_secret` in the mobile app binary; token exchange must happen server-side.
+
 ---
 
-### The Production View (`UnifiedOnboardingView.swift`)
+### 2.4 Saved Password AutoFill (`ASAuthorizationPasswordProvider`)
 
-Here is how all four features assemble into a clean, native iOS layout:
+#### Code Implementation
 
 ```swift
-import AuthenticationServices
-import SwiftUI
+// MARK: - Features/PasswordAutoFill/PasswordAutoFillViewModel.swift
 
-struct UnifiedOnboardingView: View {
-    @State private var authState = AuthState()
-    @State private var passkeyViewModel = PasskeyViewModel()
-    @State private var oauthViewModel = WebOAuthViewModel()
-    @State private var username = ""
-    @State private var password = ""
+@Observable
+final class PasswordAutoFillViewModel: NSObject, 
+    ASAuthorizationControllerDelegate, 
+    ASAuthorizationControllerPresentationContextProviding 
+{
+    var usernameText: String = ""
+    var passwordText: String = ""
 
-    var body: some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                headerSection
-                    .padding(.top, 60)
-                    .padding(.bottom, 32)
-
-                if authState.isAuthenticated {
-                    authenticatedSection
-                } else {
-                    loginFormSection
-                        .padding(.horizontal, 16)
-
-                    dividerLine
-                        .padding(.horizontal, 32)
-                        .padding(.vertical, 24)
-
-                    socialButtonsSection
-                        .padding(.horizontal, 16)
-                }
-            }
-            .padding(.horizontal, 16)
-        }
-        .background(Color(UIColor.systemGroupedBackground))
+    func requestSavedCredentials() {
+        let provider = ASAuthorizationPasswordProvider()
+        let request = provider.createRequest()
+        
+        let controller = ASAuthorizationController(authorizationRequests: [request])
+        controller.delegate = self
+        controller.presentationContextProvider = self
+        controller.performRequests()
     }
 
-    // MARK: - Subviews
-
-    private var headerSection: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "lock.shield.fill")
-                .font(.system(size: 56))
-                .foregroundStyle(.blue)
-
-            Text("Welcome Back")
-                .font(.title.bold())
-
-            Text("Sign in to continue")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+    func authorizationController(
+        controller: ASAuthorizationController, 
+        didCompleteWithAuthorization authorization: ASAuthorization
+    ) {
+        if let credential = authorization.credential as? ASPasswordCredential {
+            usernameText = credential.user
+            passwordText = credential.password
         }
     }
 
-    private var loginFormSection: some View {
-        VStack(spacing: 12) {
-            TextField("Username or Email", text: $username)
-                .textContentType(.username)
-                .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
-                .padding()
-                .background(Color(UIColor.secondarySystemGroupedBackground))
-                .cornerRadius(10)
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {}
 
-            SecureField("Password", text: $password)
-                .textContentType(.password)
-                .padding()
-                .background(Color(UIColor.secondarySystemGroupedBackground))
-                .cornerRadius(10)
-
-            Button {
-                // Perform traditional login
-            } label: {
-                Text("Sign In")
-                    .font(.headline)
-                    .foregroundStyle(.white)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-                    .background(Color.blue)
-                    .cornerRadius(25)
-            }
-        }
-    }
-
-    private var dividerLine: some View {
-        HStack(spacing: 12) {
-            Rectangle().fill(Color.secondary.opacity(0.3)).frame(height: 1)
-            Text("or").font(.caption).foregroundStyle(.secondary)
-            Rectangle().fill(Color.secondary.opacity(0.3)).frame(height: 1)
-        }
-    }
-
-    private var socialButtonsSection: some View {
-        VStack(spacing: 12) {
-            SignInWithAppleButton(.signIn) { request in
-                AppleSignInViewModel(authState: authState).configureRequest(request)
-            } onCompletion: { result in
-                AppleSignInViewModel(authState: authState).handleResult(result)
-            }
-            .signInWithAppleButtonStyle(.black)
-            .frame(height: 50)
-            .cornerRadius(25)
-
-            Button {
-                passkeyViewModel.signInWithPasskey()
-            } label: {
-                Label("Continue with Passkey", systemImage: "key.fill")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-            }
-            .buttonStyle(.bordered)
-            .tint(.blue)
-            .background(Color(UIColor.secondarySystemGroupedBackground))
-            .cornerRadius(25)
-
-            Button {
-                oauthViewModel.startOAuthFlow()
-            } label: {
-                Label("Continue with GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .frame(height: 50)
-            }
-            .buttonStyle(.bordered)
-            .tint(.blue)
-            .background(Color(UIColor.secondarySystemGroupedBackground))
-            .cornerRadius(25)
-        }
-    }
-
-    private var authenticatedSection: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "checkmark.circle.fill")
-                .font(.system(size: 64))
-                .foregroundStyle(.green)
-
-            Text("Authenticated!")
-                .font(.title2.bold())
-
-            Button("Sign Out", role: .destructive) {
-                authState.reset()
-            }
-        }
+    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+              let window = scene.windows.first else { fatalError("No window scene available.") }
+        return window
     }
 }
 
 ```
+
+#### Required Setup & Configuration
+
+1. **Text Content Types**: In your SwiftUI view, explicitly mark input fields with `.textContentType(.username)` and `.textContentType(.password)` so the system keyboard knows to offer AutoFill suggestions from iCloud Keychain.
+2. **Associated Domains**: Like Passkeys, this relies on the `webcredentials:yourdomain.com` entry under **Associated Domains** capability and the server's `apple-app-site-association` file.
 
 ---
 
