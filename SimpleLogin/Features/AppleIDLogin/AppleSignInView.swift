@@ -15,7 +15,7 @@ struct AppleSignInView: View {
     var body: some View {
         NavigationStack {
             VStack(spacing: 24) {
-                if viewModel.authState.isAuthenticated {
+                if viewModel.authState?.isAuthenticated ?? false {
                     authenticatedView
                 } else {
                     unauthenticatedView
@@ -36,12 +36,12 @@ struct AppleSignInView: View {
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
-            SignInWithAppleButton(.signIn, onRequest: viewModel.configureRequest, onCompletion: viewModel.handleResult)
+            SignInWithAppleButton(.signIn, onRequest: viewModel.configureRequest, onCompletion: viewModel.handlePublicResult)
                 .signInWithAppleButtonStyle(colorScheme == .dark ? .white : .black)
                 .frame(height: 50)
                 .padding(.horizontal, 40)
 
-            if let error = viewModel.authState.errorMessage {
+            if let error = viewModel.authState?.errorMessage {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(.red)
                     .font(.caption)
@@ -55,11 +55,11 @@ struct AppleSignInView: View {
                 .font(.system(size: 48))
                 .foregroundStyle(.green)
 
-            LabeledContent("User ID", value: viewModel.authState.userIdentifier ?? "—")
-            LabeledContent("Name", value: viewModel.authState.displayName ?? "—")
-            LabeledContent("Email", value: viewModel.authState.email ?? "—")
+            LabeledContent("User ID", value: viewModel.authState?.userIdentifier ?? "—")
+            LabeledContent("Name", value: viewModel.authState?.displayName ?? "—")
+            LabeledContent("Email", value: viewModel.authState?.email ?? "—")
 
-            if let token = viewModel.authState.identityToken {
+            if let token = viewModel.authState?.identityToken {
                 DisclosureGroup("Identity Token (JWT)") {
                     Text(token)
                         .font(.system(.caption2, design: .monospaced))
@@ -68,7 +68,7 @@ struct AppleSignInView: View {
             }
 
             Button("Sign Out", role: .destructive) {
-                viewModel.authState.reset()
+                viewModel.authState?.reset()
             }
         }
     }
@@ -76,6 +76,8 @@ struct AppleSignInView: View {
 
 #Preview {
     NavigationStack {
-        AppleSignInView(viewModel: AppleSignInViewModel(authState: AuthState()))
+        let vm = AppleSignInViewModel()
+        vm.bindAuthState(AuthState())
+        return AppleSignInView(viewModel: vm)
     }
 }

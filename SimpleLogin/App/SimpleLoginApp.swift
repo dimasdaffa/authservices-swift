@@ -12,6 +12,7 @@ struct SimpleLoginApp: App {
     var body: some Scene {
         WindowGroup {
             UnifiedOnboardingView()
+                .preferredColorScheme(.light)
         }
     }
 }

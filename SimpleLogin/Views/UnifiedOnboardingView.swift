@@ -5,13 +5,13 @@
 //  Created by DIMAS DAFFA ERNANDA on 26/07/26.
 //
 
-import AuthenticationServices
 import SwiftUI
 
 struct UnifiedOnboardingView: View {
     @State private var authState = AuthState()
     @State private var passkeyViewModel = PasskeyViewModel()
     @State private var webOAuthViewModel = WebOAuthViewModel()
+    @State private var appleSignInViewModel = AppleSignInViewModel()
     @State private var username: String = ""
     @State private var password: String = ""
     
@@ -21,17 +21,17 @@ struct UnifiedOnboardingView: View {
                 headerSection
                     .padding(.top, 60)
                     .padding(.bottom, 32)
-                
+
                 if authState.isAuthenticated {
                     authenticatedSection
                 } else {
                     loginFormSection
                         .padding(.horizontal, 16)
-                    
+
                     dividerLine
                         .padding(.horizontal, 32)
                         .padding(.vertical, 24)
-                    
+
                     socialButtonsSection
                         .padding(.horizontal, 16)
                 }
@@ -39,6 +39,7 @@ struct UnifiedOnboardingView: View {
             .padding(.horizontal, 16)
         }
         .background(Color(UIColor.systemGroupedBackground))
+        .onAppear { appleSignInViewModel.bindAuthState(authState) }
     }
     
     // MARK: - Header
@@ -134,9 +135,9 @@ struct UnifiedOnboardingView: View {
         VStack(spacing: 12) {
             HStack(spacing: 20) {
                 socialIconButton(systemImage: "apple.logo", label: "Apple") {
-                    // Trigger Sign in with Apple flow
+                    appleSignInViewModel.startSignIn()
                 }
-                
+
                 socialIconButton(assetImage: "github-logo", label: "GitHub") {
                     webOAuthViewModel.startOAuthFlow()
                 }

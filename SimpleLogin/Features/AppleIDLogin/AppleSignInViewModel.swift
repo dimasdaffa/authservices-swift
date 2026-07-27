@@ -12,18 +12,56 @@ import UIKit
 @MainActor
 @Observable
 final class AppleSignInViewModel: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
-    let authState: AuthState
+    var authState: AuthState?
 
-    init(authState: AuthState) {
-        self.authState = authState
+    override init() {
         super.init()
+    }
+
+    func bindAuthState(_ authState: AuthState) {
+        self.authState = authState
     }
 
     func configureRequest(_ request: ASAuthorizationAppleIDRequest) {
         request.requestedScopes = [.fullName, .email]
     }
 
-    func handleResult(_ result: Result<ASAuthorization, Error>) {
+    func handlePublicResult(_ result: Result<ASAuthorization, Error>) {
+        handleResult(result)
+    }
+
+    func startSignIn() {
+        let provider = ASAuthorizationAppleIDProvider()
+        let request = provider.createRequest()
+        request.requestedScopes = [.fullName, .email]
+
+        let controller = ASAuthorizationController(authorizationRequests: [request])
+        controller.delegate = self
+        controller.presentationContextProvider = self
+        controller.performRequests()
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+        handleResult(.success(authorization))
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        handleResult(.failure(error))
+    }
+
+    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first,
+              let window = scene.windows.first
+        else {
+            fatalError("No window scene available.")
+        }
+        return window
+    }
+
+    private func handleResult(_ result: Result<ASAuthorization, Error>) {
+        guard let authState else { return }
         switch result {
         case .success(let authorization):
             guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else {
@@ -49,24 +87,5 @@ final class AppleSignInViewModel: NSObject, ASAuthorizationControllerDelegate, A
             }
             authState.errorMessage = error.localizedDescription
         }
-    }
-
-    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
-        handleResult(.success(authorization))
-    }
-
-    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
-        handleResult(.failure(error))
-    }
-
-    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
-        guard let scene = UIApplication.shared.connectedScenes
-            .compactMap({ $0 as? UIWindowScene })
-            .first,
-              let window = scene.windows.first
-        else {
-            fatalError("No window scene available.")
-        }
-        return window
     }
 }

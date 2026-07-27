@@ -9,11 +9,13 @@ import SwiftUI
 
 struct AuthenticationHubView: View {
     @State private var authState = AuthState()
+    @State private var appleSignInViewModel = AppleSignInViewModel()
 
     var body: some View {
         TabView {
             Tab("Apple ID", systemImage: "apple.logo") {
-                AppleSignInView(viewModel: AppleSignInViewModel(authState: authState))
+                AppleSignInView(viewModel: appleSignInViewModel)
+                    .onAppear { appleSignInViewModel.bindAuthState(authState) }
             }
             Tab("Passkey", systemImage: "person.badge.key.fill") {
                 PasskeyView(viewModel: PasskeyViewModel())
