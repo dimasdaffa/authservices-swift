@@ -72,3 +72,9 @@ struct PasswordAutoFillView: View {
         }
     }
 }
+
+#Preview {
+    NavigationStack {
+        PasswordAutoFillView(viewModel: PasswordAutoFillViewModel(authState: AuthState()))
+    }
+}

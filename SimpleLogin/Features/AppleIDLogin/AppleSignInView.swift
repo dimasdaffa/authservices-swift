@@ -73,3 +73,9 @@ struct AppleSignInView: View {
         }
     }
 }
+
+#Preview {
+    NavigationStack {
+        AppleSignInView(viewModel: AppleSignInViewModel(authState: AuthState()))
+    }
+}

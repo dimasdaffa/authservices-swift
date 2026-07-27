@@ -168,3 +168,7 @@ struct UnifiedOnboardingView: View {
         }
     }
 }
+
+#Preview {
+    UnifiedOnboardingView()
+}

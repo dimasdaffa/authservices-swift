@@ -27,3 +27,7 @@ struct AuthenticationHubView: View {
         }
     }
 }
+
+#Preview {
+    AuthenticationHubView()
+}

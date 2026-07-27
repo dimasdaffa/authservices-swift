@@ -55,3 +55,9 @@ struct WebOAuthView: View {
         }
     }
 }
+
+#Preview {
+    NavigationStack {
+        WebOAuthView(viewModel: WebOAuthViewModel())
+    }
+}

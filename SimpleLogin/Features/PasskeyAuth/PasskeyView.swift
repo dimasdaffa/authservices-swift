@@ -66,3 +66,9 @@ struct PasskeyView: View {
         }
     }
 }
+
+#Preview {
+    NavigationStack {
+        PasskeyView(viewModel: PasskeyViewModel())
+    }
+}
