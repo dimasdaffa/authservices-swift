@@ -12,7 +12,7 @@ import UIKit
 @MainActor
 @Observable
 final class PasskeyViewModel: NSObject, ASAuthorizationControllerDelegate, ASAuthorizationControllerPresentationContextProviding {
-    private let relyingPartyIdentifier = "example.com"
+    private let relyingPartyIdentifier = "simplelogin-passkeys-dev.web.app"
 
     var assertionResult: PasskeyAssertionResult?
     var errorMessage: String?
