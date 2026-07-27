@@ -75,77 +75,125 @@ final class AuthState {
 
 ### 2.1 Native Sign in with Apple (`ASAuthorizationAppleIDProvider`)
 
-#### Code Implementation
+#### Core Implementation
 
 ```swift
 // MARK: - Features/AppleIDLogin/AppleSignInViewModel.swift
 
-@Observable
-@MainActor
-final class AppleSignInViewModel {
-    let authState: AuthState
+import AuthenticationServices
+import SwiftUI
 
-    init(authState: AuthState) {
+@MainActor
+@Observable
+final class AppleSignInViewModel: NSObject, 
+    ASAuthorizationControllerDelegate, 
+    ASAuthorizationControllerPresentationContextProviding 
+{
+    var authState: AuthState?
+
+    func bindAuthState(_ authState: AuthState) {
         self.authState = authState
     }
 
-    func configureRequest(_ request: ASAuthorizationAppleIDRequest) {
-        request.requestedScopes = [.fullName, .email]
+    // Programmatic trigger for custom UI (e.g. custom icon/button)
+    func startSignIn() {
+        let provider = ASAuthorizationAppleIDProvider()
+        let request = provider.createRequest()
+        request.requestedScopes = [.fullName, .email] // Request user identity scopes
+
+        let controller = ASAuthorizationController(authorizationRequests: [request])
+        controller.delegate = self
+        controller.presentationContextProvider = self
+        controller.performRequests() // Launches system authorization sheet
     }
 
-    func handleResult(_ result: Result<ASAuthorization, Error>) {
+    // MARK: - ASAuthorizationControllerDelegate
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithAuthorization authorization: ASAuthorization) {
+        handleResult(.success(authorization))
+    }
+
+    func authorizationController(controller: ASAuthorizationController, didCompleteWithError error: Error) {
+        handleResult(.failure(error))
+    }
+
+    // Provides the window anchor for the system half-sheet UI
+    func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
+        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
+              let window = scene.windows.first else { fatalError("No window scene available.") }
+        return window
+    }
+
+    // MARK: - Credential Handling
+
+    private func handleResult(_ result: Result<ASAuthorization, Error>) {
+        guard let authState else { return }
         switch result {
         case .success(let authorization):
             guard let credential = authorization.credential as? ASAuthorizationAppleIDCredential else { return }
+            
+            // 1. Stable, team-scoped unique user identifier
             authState.userIdentifier = credential.user
-
-            // CRITICAL: fullName and email are ONLY delivered on first authorization.
+            
+            // 2. Full name (Delivered ONLY on first authorization!)
             if let nameComponents = credential.fullName {
                 authState.displayName = PersonNameComponentsFormatter
                     .localizedString(from: nameComponents, style: .default)
             }
+            
+            // 3. Relay/Primary Email (Delivered ONLY on first authorization!)
             authState.email = credential.email
-
-            if let tokenData = credential.identityToken,
-               let tokenString = String(data: tokenData, encoding: .utf8) {
-                authState.identityToken = tokenString
+            
+            // 4. Signed JWT identity token for backend server validation
+            if let tokenData = credential.identityToken {
+                authState.identityToken = String(data: tokenData, encoding: .utf8)
             }
-
+            
             authState.isAuthenticated = true
 
         case .failure(let error):
             let nsError = error as NSError
             if nsError.domain == ASAuthorizationError.errorDomain,
-               nsError.code == ASAuthorizationError.canceled.rawValue { return }
+               nsError.code == ASAuthorizationError.canceled.rawValue { return } // User dismissed sheet
             authState.errorMessage = error.localizedDescription
         }
     }
 }
 
-// MARK: - Features/AppleIDLogin/AppleSignInView.swift
+```
 
-struct AppleSignInView: View {
-    let viewModel: AppleSignInViewModel
+#### Triggering Authentication in SwiftUI
 
-    var body: some View {
-        SignInWithAppleButton(
-            .signIn,
-            onRequest: viewModel.configureRequest,
-            onCompletion: viewModel.handleResult
-        )
-        .signInWithAppleButtonStyle(.black)
-        .frame(height: 50)
-        .cornerRadius(25)
-    }
+You can trigger this flow programmatically from custom UI or declaratively using Apple's native control:
+
+```swift
+// Approach 1: Programmatic Call (Used in UnifiedOnboardingView)
+socialIconButton(systemImage: "apple.logo", label: "Apple") {
+    appleSignInViewModel.startSignIn()
 }
+
+// Approach 2: Native System Button (Declarative Alternative)
+SignInWithAppleButton(.signIn, onRequest: viewModel.configureRequest, onCompletion: viewModel.handlePublicResult)
+    .signInWithAppleButtonStyle(.black)
+    .frame(height: 50)
 
 ```
 
+> **Note on App Store HIG Compliance:** While programmatic execution (`startSignIn()`) gives you full flexibility to trigger authentication from custom buttons, App Store Review Guideline 4.8 requires that any custom Sign in with Apple button maintains equal or greater visual prominence compared to other third-party login options. Alternatively, you can use Apple's pre-rendered `SignInWithAppleButton` control to guarantee HIG compliance out of the box.
+
+#### Decoding the `ASAuthorizationAppleIDCredential` Payload
+
+Upon successful authorization, the system delegate returns three key identity properties:
+
+1. **`credential.user` (Persistent User ID):** A stable string (e.g., `001604.4e302e...`). This ID never changes across device restores or app reinstalls. Store this as the primary foreign key in your database.
+2. **`credential.fullName` & `credential.email` (First-Time Only):** Delivered **only once** on initial registration. Subsequent logins return `nil` for both fields to protect user privacy. Your server must save them on first receipt.
+3. **`credential.identityToken` (Signed JWT):** A Base64 JSON Web Token signed by Apple. Your backend must verify this token against Apple's public key endpoint (`[https://appleid.apple.com/auth/keys](https://appleid.apple.com/auth/keys)`) before issuing an application session.
+
 #### Required Setup & Configuration
 
-1. **Xcode Capability**: Select your App Target $\rightarrow$ **Signing & Capabilities** $\rightarrow$ Click **+ Capability** $\rightarrow$ Add **Sign In with Apple**.
-2. **App ID Registration**: Ensure your Bundle Identifier is explicitly registered in the [Apple Developer Portal](https://developer.apple.com) under **Identifiers** with the **Sign In with Apple** capability enabled.
-3. **Server Validation**: The `identityToken` returned by Apple is a signed JWT. Your backend must fetch Apple's public key from `[https://appleid.apple.com/auth/keys](https://appleid.apple.com/auth/keys)` to verify the token signature, issuer (`iss`), and audience (`aud`).
+1. **Xcode Capability:** Select App Target $\rightarrow$ **Signing & Capabilities** $\rightarrow$ **+ Capability** $\rightarrow$ **Sign In with Apple**.
+2. **App ID Registration:** Ensure your Bundle Identifier has **Sign In with Apple** enabled in the [Apple Developer Portal](https://developer.apple.com).
+3. **Server Validation:** Send `identityToken` to your API server to verify `iss` (issuer), `aud` (Bundle ID), and `sub` (User ID) claims against Apple's keys.
 
 ---
 
