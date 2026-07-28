@@ -204,19 +204,59 @@ Upon successful authorization, the system delegate returns three key identity pr
 ```swift
 // MARK: - Features/PasskeyAuth/PasskeyViewModel.swift
 
-@Observable
-final class PasskeyViewModel: NSObject, 
-    ASAuthorizationControllerDelegate, 
-    ASAuthorizationControllerPresentationContextProviding 
-{
-    private let relyingPartyIdentifier = "yourdomain.com"
-    var errorMessage: String?
+import AuthenticationServices
+import SwiftUI
+import UIKit
 
-    func signInWithPasskey() {
+@MainActor
+@Observable
+final class PasskeyViewModel: NSObject,
+    ASAuthorizationControllerDelegate,
+    ASAuthorizationControllerPresentationContextProviding
+{
+    private let relyingPartyIdentifier = "simplelogin-passkeys-dev.web.app"
+    
+    var authState: AuthState?
+    var errorMessage: String?
+    var assertionResult: ASAuthorizationPlatformPublicKeyCredentialAssertion?
+
+    func bindAuthState(_ authState: AuthState) {
+        self.authState = authState
+    }
+
+    // MARK: - Passkey Registration (Creation Request)
+
+    func registerPasskey(username: String) {
+        errorMessage = nil
+        assertionResult = nil
+        
         let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(
             relyingPartyIdentifier: relyingPartyIdentifier
         )
-        // Challenge MUST be fetched from your server in production
+        let challenge = fetchChallengeFromServer()
+        let userID = username.data(using: .utf8) ?? Data()
+
+        let request = provider.createCredentialRegistrationRequest(
+            challenge: challenge,
+            name: username,
+            userID: userID
+        )
+
+        let controller = ASAuthorizationController(authorizationRequests: [request])
+        controller.delegate = self
+        controller.presentationContextProvider = self
+        controller.performRequests()
+    }
+
+    // MARK: - Passkey Assertion (Sign-In Request)
+
+    func signInWithPasskey() {
+        errorMessage = nil
+        assertionResult = nil
+        
+        let provider = ASAuthorizationPlatformPublicKeyCredentialProvider(
+            relyingPartyIdentifier: relyingPartyIdentifier
+        )
         let challenge = fetchChallengeFromServer()
         let request = provider.createCredentialAssertionRequest(challenge: challenge)
 
@@ -226,12 +266,26 @@ final class PasskeyViewModel: NSObject,
         controller.performRequests()
     }
 
+    // MARK: - ASAuthorizationControllerDelegate
+
     func authorizationController(
-        controller: ASAuthorizationController, 
+        controller: ASAuthorizationController,
         didCompleteWithAuthorization authorization: ASAuthorization
     ) {
-        if let assertion = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion {
-            // Send assertion.signature and rawAuthenticatorData to backend for cryptographic verification
+        if let registration = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialRegistration {
+            // New passkey created & saved to iCloud Keychain
+            print("Passkey registered for ID: \(registration.credentialID)")
+            authState?.errorMessage = nil
+            
+        } else if let assertion = authorization.credential as? ASAuthorizationPlatformPublicKeyCredentialAssertion {
+            // Passkey verified via Secure Enclave & Face ID / Touch ID
+            self.assertionResult = assertion
+            let userString = String(data: assertion.userID, encoding: .utf8) ?? "Passkey User"
+            
+            authState?.userIdentifier = userString
+            authState?.displayName = userString
+            authState?.isAuthenticated = true
+            authState?.errorMessage = nil
         }
     }
 
@@ -242,6 +296,8 @@ final class PasskeyViewModel: NSObject,
         errorMessage = error.localizedDescription
     }
 
+    // MARK: - Presentation Anchor
+
     func presentationAnchor(for controller: ASAuthorizationController) -> ASPresentationAnchor {
         guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
               let window = scene.windows.first else { fatalError("No window scene available.") }
@@ -249,6 +305,7 @@ final class PasskeyViewModel: NSObject,
     }
 
     private func fetchChallengeFromServer() -> Data {
+        // Challenge MUST be fetched from your server in production
         var bytes = [UInt8](repeating: 0, count: 32)
         _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
         return Data(bytes)
@@ -257,28 +314,85 @@ final class PasskeyViewModel: NSObject,
 
 ```
 
+---
+
+#### Important Workflow Note: Registration Requirement
+
+> **Critical Rule:** A user **MUST register a passkey first** (while authenticated via another method like Sign in with Apple or Email/Password) before they can use **Sign In with Passkey**.
+> Passkeys rely on asymmetric public-private key pairs generated by the device's Secure Enclave and saved in **iCloud Keychain**. If a user attempts to sign in without an existing registered passkey for the domain:
+> * iOS will find no matching credentials in iCloud Keychain.
+> * iOS will fallback to displaying a QR code for cross-device (caBLE) authentication.
+> * The request will fail with `ASCABLEClient.ClientError` if no secondary device has a key.
+> 
+> 
+
+---
+
 #### Required Setup & Configuration
 
-1. **Xcode Capability**: Select App Target $\rightarrow$ **Signing & Capabilities** $\rightarrow$ Add **Associated Domains**.
-2. **Domain Entry**: Add an entry under Domains formatted as:
+1. **Xcode Capability**
+* Select Target $\rightarrow$ **Signing & Capabilities** $\rightarrow$ **+ Capability** $\rightarrow$ **Associated Domains**.
+* Add the following domain entry (append `?mode=developer` to bypass CDN caching during local development):
 ```text
-webcredentials:yourdomain.com
+webcredentials:simplelogin-passkeys-dev.web.app?mode=developer
 
 ```
 
 
-3. **Server AASA File**: Host an `apple-app-site-association` file on your server over HTTPS at `[https://yourdomain.com/.well-known/apple-app-site-association](https://yourdomain.com/.well-known/apple-app-site-association)`:
+
+
+2. **Firebase AASA File Location & Format**
+* File path inside project: `public/.well-known/apple-app-site-association` *(strictly NO file extension like `.json` or `.txt`)*.
+* File content (matching App ID Prefix / Team ID from Apple Developer Portal):
 ```json
 {
   "webcredentials": {
-    "apps": [ "TEAMID.com.yourcompany.yourapp" ]
+    "apps": [
+      "D79M63NF6C.com.dimasdaffa.SimpleLogin"
+    ]
   }
 }
 
 ```
 
 
-4. **Relying Party ID**: Ensure `relyingPartyIdentifier` in your ViewModel matches `yourdomain.com` exactly.
+
+
+3. **Firebase Hosting Configuration (`firebase.json`)**
+* Ensure `firebase.json` allows hidden files in `ignore` and forces `Content-Type: application/json`:
+```json
+{
+  "hosting": {
+    "public": "public",
+    "ignore": [
+      "firebase.json",
+      "**/node_modules/**"
+    ],
+    "headers": [
+      {
+        "source": "/.well-known/apple-app-site-association",
+        "headers": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ]
+      }
+    ]
+  }
+}
+
+```
+
+
+
+
+4. **Relying Party ID**
+* Ensure `relyingPartyIdentifier` in `PasskeyViewModel` matches `simplelogin-passkeys-dev.web.app` exactly.
+
+
+5. **iOS Device Testing Requirements**
+* On physical testing devices: Open **Settings** $\rightarrow$ **Developer** $\rightarrow$ Toggle **Associated Domains Development** to **ON**.
 
 ---
 

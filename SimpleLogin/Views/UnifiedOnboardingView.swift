@@ -21,17 +21,17 @@ struct UnifiedOnboardingView: View {
                 headerSection
                     .padding(.top, 60)
                     .padding(.bottom, 32)
-
+                
                 if authState.isAuthenticated {
                     authenticatedSection
                 } else {
                     loginFormSection
                         .padding(.horizontal, 16)
-
+                    
                     dividerLine
                         .padding(.horizontal, 32)
                         .padding(.vertical, 24)
-
+                    
                     socialButtonsSection
                         .padding(.horizontal, 16)
                 }
@@ -39,7 +39,10 @@ struct UnifiedOnboardingView: View {
             .padding(.horizontal, 16)
         }
         .background(Color(UIColor.systemGroupedBackground))
-        .onAppear { appleSignInViewModel.bindAuthState(authState) }
+        .onAppear {
+            appleSignInViewModel.bindAuthState(authState)
+            passkeyViewModel.bindAuthState(authState)
+        }
     }
     
     // MARK: - Header
@@ -60,32 +63,45 @@ struct UnifiedOnboardingView: View {
     }
     
     // MARK: - Authenticated State
-    
-    private var authenticatedSection: some View {
-        VStack(spacing: 16) {
-            Image(systemName: "checkmark.seal.fill")
-                .font(.system(size: 48))
-                .foregroundStyle(.green)
-            
-            LabeledContent("User ID", value: authState.userIdentifier ?? "—")
-            LabeledContent("Name", value: authState.displayName ?? "—")
-            LabeledContent("Email", value: authState.email ?? "—")
-            
-            if let token = authState.identityToken {
-                DisclosureGroup("Identity Token (JWT)") {
-                    Text(token)
-                        .font(.system(.caption2, design: .monospaced))
-                        .textSelection(.enabled)
+        
+        private var authenticatedSection: some View {
+            VStack(spacing: 16) {
+                Image(systemName: "checkmark.seal.fill")
+                    .font(.system(size: 48))
+                    .foregroundStyle(.green)
+                
+                LabeledContent("User ID", value: authState.userIdentifier ?? "—")
+                LabeledContent("Name", value: authState.displayName ?? "—")
+                LabeledContent("Email", value: authState.email ?? "—")
+                
+                if let token = authState.identityToken {
+                    DisclosureGroup("Identity Token (JWT)") {
+                        Text(token)
+                            .font(.system(.caption2, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
                 }
+                
+                // 1. Add Passkey Registration Button
+                Button {
+                    let username = authState.email ?? authState.displayName ?? authState.userIdentifier ?? "User"
+                    passkeyViewModel.registerPasskey(username: username)
+                } label: {
+                    Label("Register Passkey for this Account", systemImage: "key.badge.plus")
+                        .frame(maxWidth: .infinity)
+                        .frame(height: 44)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.blue)
+                
+                // 2. Sign Out Button
+                Button("Sign Out", role: .destructive) {
+                    authState.reset()
+                }
+                .buttonStyle(.bordered)
             }
-            
-            Button("Sign Out", role: .destructive) {
-                authState.reset()
-            }
-            .buttonStyle(.bordered)
+            .padding(24)
         }
-        .padding(24)
-    }
     
     // MARK: - Login Form
     
@@ -137,7 +153,7 @@ struct UnifiedOnboardingView: View {
                 socialIconButton(systemImage: "apple.logo", label: "Apple") {
                     appleSignInViewModel.startSignIn()
                 }
-
+                
                 socialIconButton(assetImage: "github-logo", label: "GitHub") {
                     webOAuthViewModel.startOAuthFlow()
                 }

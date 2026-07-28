@@ -9,7 +9,7 @@ import AuthenticationServices
 import SwiftUI
 
 struct PasskeyView: View {
-    @Bindable var viewModel: PasskeyViewModel
+    var viewModel: PasskeyViewModel
 
     var body: some View {
         NavigationStack {
@@ -34,7 +34,8 @@ struct PasskeyView: View {
                 .padding(.horizontal, 40)
 
                 Button {
-                    viewModel.registerPasskey()
+                    let username = viewModel.authState?.email ?? viewModel.authState?.userIdentifier ?? "User"
+                    viewModel.registerPasskey(username: username)
                 } label: {
                     Label("Register New Passkey", systemImage: "plus.circle")
                         .frame(maxWidth: .infinity)
@@ -47,7 +48,7 @@ struct PasskeyView: View {
                     GroupBox("Assertion Result") {
                         VStack(alignment: .leading, spacing: 8) {
                             LabeledContent("Credential ID", value: assertion.credentialID.base64EncodedString().prefix(24) + "…")
-                            LabeledContent("User Handle", value: assertion.userHandle.base64EncodedString())
+                            LabeledContent("User Handle", value: assertion.userID.base64EncodedString())
                             Text("Signature & authenticatorData available for server verification.")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)

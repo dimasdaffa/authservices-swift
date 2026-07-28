@@ -8,7 +8,7 @@
 	</array>
 	<key>com.apple.developer.associated-domains</key>
 	<array>
-		<string>webcredentials:simplelogin-passkeys-dev.web.app</string>
+		<string>webcredentials:simplelogin-passkeys-dev.web.app?mode=developer</string>
 	</array>
 </dict>
 </plist>
