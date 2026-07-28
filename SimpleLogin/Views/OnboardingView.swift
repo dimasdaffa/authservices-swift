@@ -1,5 +1,5 @@
 //
-//  UnifiedOnboardingView.swift
+//  OnboardingView.swift
 //  SimpleLogin
 //
 //  Created by DIMAS DAFFA ERNANDA on 26/07/26.
@@ -7,13 +7,15 @@
 
 import SwiftUI
 
-struct UnifiedOnboardingView: View {
+struct OnboardingView: View {
     @State private var authState = AuthState()
     @State private var passkeyViewModel = PasskeyViewModel()
     @State private var webOAuthViewModel = WebOAuthViewModel()
     @State private var appleSignInViewModel = AppleSignInViewModel()
+    
     @State private var username: String = ""
     @State private var password: String = ""
+    @State private var showSignUpSheet: Bool = false
     
     var body: some View {
         ScrollView {
@@ -28,6 +30,9 @@ struct UnifiedOnboardingView: View {
                     loginFormSection
                         .padding(.horizontal, 16)
                     
+                    signUpLink
+                        .padding(.top, 16)
+                    
                     dividerLine
                         .padding(.horizontal, 32)
                         .padding(.vertical, 24)
@@ -39,6 +44,9 @@ struct UnifiedOnboardingView: View {
             .padding(.horizontal, 16)
         }
         .background(Color(UIColor.systemGroupedBackground))
+        .sheet(isPresented: $showSignUpSheet) {
+            SignUpView(authState: authState)
+        }
         .onAppear {
             appleSignInViewModel.bindAuthState(authState)
             passkeyViewModel.bindAuthState(authState)
@@ -64,45 +72,45 @@ struct UnifiedOnboardingView: View {
     }
     
     // MARK: - Authenticated State
-        
-        private var authenticatedSection: some View {
-            VStack(spacing: 16) {
-                Image(systemName: "checkmark.seal.fill")
-                    .font(.system(size: 48))
-                    .foregroundStyle(.green)
-                
-                LabeledContent("User ID", value: authState.userIdentifier ?? "—")
-                LabeledContent("Name", value: authState.displayName ?? "—")
-                LabeledContent("Email", value: authState.email ?? "—")
-                
-                if let token = authState.identityToken {
-                    DisclosureGroup("Identity Token (JWT)") {
-                        Text(token)
-                            .font(.system(.caption2, design: .monospaced))
-                            .textSelection(.enabled)
-                    }
+    
+    private var authenticatedSection: some View {
+        VStack(spacing: 16) {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 48))
+                .foregroundStyle(.green)
+            
+            LabeledContent("User ID", value: authState.userIdentifier ?? "—")
+            LabeledContent("Name", value: authState.displayName ?? "—")
+            LabeledContent("Email", value: authState.email ?? "—")
+            
+            if let token = authState.identityToken {
+                DisclosureGroup("Identity Token (JWT)") {
+                    Text(token)
+                        .font(.system(.caption2, design: .monospaced))
+                        .textSelection(.enabled)
                 }
-                
-                // 1. Add Passkey Registration Button
-                Button {
-                    let username = authState.email ?? authState.displayName ?? authState.userIdentifier ?? "User"
-                    passkeyViewModel.registerPasskey(username: username)
-                } label: {
-                    Label("Register Passkey for this Account", systemImage: "key.badge.plus")
-                        .frame(maxWidth: .infinity)
-                        .frame(height: 44)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.blue)
-                
-                // 2. Sign Out Button
-                Button("Sign Out", role: .destructive) {
-                    authState.reset()
-                }
-                .buttonStyle(.bordered)
             }
-            .padding(24)
+            
+            Button {
+                let user = authState.email ?? authState.displayName ?? authState.userIdentifier ?? "User"
+                passkeyViewModel.registerPasskey(username: user)
+            } label: {
+                Label("Register Passkey for this Account", systemImage: "key.badge.plus")
+                    .frame(maxWidth: .infinity)
+                    .frame(height: 44)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.blue)
+            
+            Button("Sign Out", role: .destructive) {
+                authState.reset()
+                username = ""
+                password = ""
+            }
+            .buttonStyle(.bordered)
         }
+        .padding(24)
+    }
     
     // MARK: - Login Form
     
@@ -119,7 +127,11 @@ struct UnifiedOnboardingView: View {
                 .textFieldStyle(.roundedBorder)
             
             Button {
-                // Submit credentials
+                guard !username.isEmpty, !password.isEmpty else { return }
+                authState.userIdentifier = username
+                authState.displayName = username
+                authState.email = username.contains("@") ? username : nil
+                authState.isAuthenticated = true
             } label: {
                 Text("Sign In")
                     .frame(maxWidth: .infinity)
@@ -127,7 +139,22 @@ struct UnifiedOnboardingView: View {
             }
             .buttonStyle(.borderedProminent)
             .tint(.blue)
+            .disabled(username.isEmpty || password.isEmpty)
         }
+    }
+    
+    // MARK: - Sign Up Trigger
+    
+    private var signUpLink: some View {
+        HStack(spacing: 4) {
+            Text("Don't have an account?")
+                .foregroundStyle(.secondary)
+            Button("Sign Up") {
+                showSignUpSheet = true
+            }
+            .fontWeight(.semibold)
+        }
+        .font(.subheadline)
     }
     
     // MARK: - Divider
@@ -158,7 +185,6 @@ struct UnifiedOnboardingView: View {
                 socialIconButton(assetImage: "github-logo", label: "GitHub") {
                     webOAuthViewModel.startOAuthFlow()
                 }
-                .foregroundStyle(.black)
                 
                 socialIconButton(systemImage: "key.fill", label: "Passkey") {
                     passkeyViewModel.signInWithPasskey()
@@ -166,7 +192,7 @@ struct UnifiedOnboardingView: View {
             }
             .padding(.top, 4)
             
-            if let error = passkeyViewModel.errorMessage ?? webOAuthViewModel.errorMessage {
+            if let error = passkeyViewModel.errorMessage ?? webOAuthViewModel.errorMessage ?? authState.errorMessage {
                 Text(error)
                     .font(.caption)
                     .foregroundStyle(.red)
@@ -174,7 +200,6 @@ struct UnifiedOnboardingView: View {
         }
     }
     
-    // SF Symbol variant (Apple, Passkey)
     private func socialIconButton(systemImage: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: systemImage)
@@ -190,7 +215,6 @@ struct UnifiedOnboardingView: View {
         .accessibilityLabel("Continue with \(label)")
     }
     
-    // Asset image variant (GitHub)
     private func socialIconButton(assetImage: String, label: String, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(assetImage)
@@ -211,5 +235,5 @@ struct UnifiedOnboardingView: View {
 }
 
 #Preview {
-    UnifiedOnboardingView()
+    OnboardingView()
 }
