@@ -11,7 +11,7 @@ import SwiftUI
 struct SimpleLoginApp: App {
     var body: some Scene {
         WindowGroup {
-            UnifiedOnboardingView()
+            OnboardingView()
                 .preferredColorScheme(.light)
         }
     }

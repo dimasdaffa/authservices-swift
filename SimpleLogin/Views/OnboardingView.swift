@@ -185,6 +185,7 @@ struct OnboardingView: View {
                 socialIconButton(assetImage: "github-logo", label: "GitHub") {
                     webOAuthViewModel.startOAuthFlow()
                 }
+                .foregroundStyle(.black)
                 
                 socialIconButton(systemImage: "key.fill", label: "Passkey") {
                     passkeyViewModel.signInWithPasskey()
