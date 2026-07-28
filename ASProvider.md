@@ -1,7 +1,6 @@
 
----
-
-# Apple's Authentication Services: Concepts, Analogies, and HIG Rules
+```markdown
+# Apple's Authentication Services: Implementation & Setup Guide
 
 **Part 1 of 2** · iOS 17+ · Swift 6 · Xcode 16
 
@@ -33,12 +32,91 @@ Rather than dumping all logic into a single monolithic view, production iOS apps
 ```text
 SimpleLogin/
 ├── App/
-│   └── AuthState.swift
-└── Features/
-    ├── AppleIDLogin/        (Sign in with Apple)
-    ├── PasskeyAuth/         (FIDO2 / WebAuthn)
-    ├── WebOAuth/            (ASWebAuthenticationSession)
-    └── PasswordAutoFill/    (iCloud Keychain AutoFill)
+│   ├── AppConfig.swift         (Type-safe environment wrapper)
+│   ├── AuthState.swift         (Global authentication state)
+│   └── SimpleLoginApp.swift
+├── Features/
+│   ├── AppleIDLogin/        (Sign in with Apple)
+│   ├── PasskeyAuth/         (FIDO2 / WebAuthn)
+│   ├── WebOAuth/            (ASWebAuthenticationSession)
+│   └── PasswordAutoFill/    (iCloud Keychain AutoFill)
+├── Config.example.xcconfig     (Template committed to source control)
+└── Config.xcconfig             (Local secrets - added to .gitignore)
+
+```
+
+---
+
+### Environment & Secret Management Setup
+
+To avoid committing sensitive keys, credentials, or environment domains to source control, use Xcode Configuration files (`.xcconfig`) coupled with a type-safe `AppConfig` wrapper.
+
+#### 1. Version-Controlled Template (`Config.example.xcconfig`)
+
+Commit this file to your repository as a template for team members:
+
+```text
+// Config.example.xcconfig
+// Copy this file to Config.xcconfig and supply your environment values.
+
+PASSKEY_RELYING_PARTY_ID = your-domain.web.app
+GITHUB_CLIENT_ID = YOUR_GITHUB_CLIENT_ID_HERE
+OAUTH_CALLBACK_SCHEME = simplelogin
+
+```
+
+#### 2. Local Configuration File (`Config.xcconfig`)
+
+Create `Config.xcconfig` locally and add `Config.xcconfig` to your `.gitignore`:
+
+```text
+// Config.xcconfig (Do NOT commit to git)
+
+PASSKEY_RELYING_PARTY_ID = your-passkey-domain.web.app
+GITHUB_CLIENT_ID = YOUR_ACTUAL_CLIENT_ID
+OAUTH_CALLBACK_SCHEME = simplelogin
+
+```
+
+#### 3. Info.plist Evaluation
+
+Map the build variables into your target's **Info** tab in Xcode so they can be read by `Bundle.main`:
+
+| Key | Type | Value |
+| --- | --- | --- |
+| `PASSKEY_RELYING_PARTY_ID` | String | `$(PASSKEY_RELYING_PARTY_ID)` |
+| `GITHUB_CLIENT_ID` | String | `$(GITHUB_CLIENT_ID)` |
+| `OAUTH_CALLBACK_SCHEME` | String | `$(OAUTH_CALLBACK_SCHEME)` |
+
+#### 4. Type-Safe Swift Wrapper (`AppConfig.swift`)
+
+```swift
+// MARK: - App/AppConfig.swift
+
+import Foundation
+
+enum AppConfig {
+    private static func infoValue(forKey key: String) -> String {
+        guard let value = Bundle.main.object(forInfoDictionaryKey: key) as? String,
+              !value.isEmpty
+        else {
+            fatalError("\(key) missing or empty in Info.plist / Config.xcconfig")
+        }
+        return value
+    }
+
+    static var passkeyRelyingPartyID: String {
+        infoValue(forKey: "PASSKEY_RELYING_PARTY_ID")
+    }
+
+    static var githubClientID: String {
+        infoValue(forKey: "GITHUB_CLIENT_ID")
+    }
+
+    static var oauthCallbackScheme: String {
+        infoValue(forKey: "OAUTH_CALLBACK_SCHEME")
+    }
+}
 
 ```
 
@@ -47,6 +125,8 @@ SimpleLogin/
 ### Shared State (`AuthState.swift`)
 
 ```swift
+// MARK: - App/AuthState.swift
+
 import AuthenticationServices
 import SwiftUI
 
@@ -187,12 +267,12 @@ Upon successful authorization, the system delegate returns three key identity pr
 
 1. **`credential.user` (Persistent User ID):** A stable string (e.g., `001604.4e302e...`). This ID never changes across device restores or app reinstalls. Store this as the primary foreign key in your database.
 2. **`credential.fullName` & `credential.email` (First-Time Only):** Delivered **only once** on initial registration. Subsequent logins return `nil` for both fields to protect user privacy. Your server must save them on first receipt.
-3. **`credential.identityToken` (Signed JWT):** A Base64 JSON Web Token signed by Apple. Your backend must verify this token against Apple's public key endpoint (`[https://appleid.apple.com/auth/keys](https://appleid.apple.com/auth/keys)`) before issuing an application session.
+3. **`credential.identityToken` (Signed JWT):** A Base64 JSON Web Token signed by Apple. Your backend must verify this token against Apple's public key endpoint (`https://appleid.apple.com/auth/keys`) before issuing an application session.
 
 #### Required Setup & Configuration
 
 1. **Xcode Capability:** Select App Target $\rightarrow$ **Signing & Capabilities** $\rightarrow$ **+ Capability** $\rightarrow$ **Sign In with Apple**.
-2. **App ID Registration:** Ensure your Bundle Identifier has **Sign In with Apple** enabled in the [Apple Developer Portal](https://developer.apple.com).
+2. **App ID Registration:** Ensure your Bundle Identifier has **Sign In with Apple** enabled in the Apple Developer Portal.
 3. **Server Validation:** Send `identityToken` to your API server to verify `iss` (issuer), `aud` (Bundle ID), and `sub` (User ID) claims against Apple's keys.
 
 ---
@@ -214,7 +294,7 @@ final class PasskeyViewModel: NSObject,
     ASAuthorizationControllerDelegate,
     ASAuthorizationControllerPresentationContextProviding
 {
-    private let relyingPartyIdentifier = "simplelogin-passkeys-dev.web.app"
+    private let relyingPartyIdentifier = AppConfig.passkeyRelyingPartyID
     
     var authState: AuthState?
     var errorMessage: String?
@@ -334,21 +414,21 @@ final class PasskeyViewModel: NSObject,
 * Select Target $\rightarrow$ **Signing & Capabilities** $\rightarrow$ **+ Capability** $\rightarrow$ **Associated Domains**.
 * Add the following domain entry (append `?mode=developer` to bypass CDN caching during local development):
 ```text
-webcredentials:simplelogin-passkeys-dev.web.app?mode=developer
+webcredentials:YOUR_PASSKEY_DOMAIN.web.app?mode=developer
 
 ```
 
 
 
 
-2. **Firebase AASA File Location & Format**
-* File path inside project: `public/.well-known/apple-app-site-association` *(strictly NO file extension like `.json` or `.txt`)*.
+2. **Server AASA File Location & Format**
+* File path on server: `https://YOUR_PASSKEY_DOMAIN/.well-known/apple-app-site-association` *(strictly NO file extension like `.json` or `.txt`)*.
 * File content (matching App ID Prefix / Team ID from Apple Developer Portal):
 ```json
 {
   "webcredentials": {
     "apps": [
-      "D79M63NF6C.com.dimasdaffa.SimpleLogin"
+      "YOUR_TEAM_ID.com.yourcompany.yourapp"
     ]
   }
 }
@@ -388,11 +468,13 @@ webcredentials:simplelogin-passkeys-dev.web.app?mode=developer
 
 
 4. **Relying Party ID**
-* Ensure `relyingPartyIdentifier` in `PasskeyViewModel` matches `simplelogin-passkeys-dev.web.app` exactly.
+* Ensure `PASSKEY_RELYING_PARTY_ID` in `Config.xcconfig` matches your domain name exactly.
 
 
 5. **iOS Device Testing Requirements**
 * On physical testing devices: Open **Settings** $\rightarrow$ **Developer** $\rightarrow$ Toggle **Associated Domains Development** to **ON**.
+
+
 
 ---
 
@@ -403,55 +485,133 @@ webcredentials:simplelogin-passkeys-dev.web.app?mode=developer
 ```swift
 // MARK: - Features/WebOAuth/WebOAuthViewModel.swift
 
+import AuthenticationServices
+import Foundation
+import UIKit
+
+@MainActor
 @Observable
 final class WebOAuthViewModel: NSObject, ASWebAuthenticationPresentationContextProviding {
     var authorizationCode: String?
     var errorMessage: String?
-    
-    private let clientID = "YOUR_GITHUB_CLIENT_ID"
-    private let callbackScheme = "myapp"
+    var useEphemeralSession: Bool = false
+    var authState: AuthState?
+
+    // OAuth Credentials & Configuration from AppConfig
+    private let clientID = AppConfig.githubClientID
+    private let callbackScheme = AppConfig.oauthCallbackScheme
+
+    func bindAuthState(_ authState: AuthState) {
+        self.authState = authState
+    }
 
     func startOAuthFlow() {
-        guard let authURL = URL(string: "https://github.com/login/oauth/authorize?client_id=\(clientID)&redirect_uri=\(callbackScheme)://oauth-callback&scope=user:email") else { return }
+        errorMessage = nil
+        
+        // 1. Construct Authorization URL safely with URLComponents
+        var components = URLComponents(string: "[https://github.com/login/oauth/authorize](https://github.com/login/oauth/authorize)")!
+        components.queryItems = [
+            URLQueryItem(name: "client_id", value: clientID),
+            URLQueryItem(name: "redirect_uri", value: "\(callbackScheme)://oauth-callback"),
+            URLQueryItem(name: "scope", value: "user:email"),
+            URLQueryItem(name: "state", value: UUID().uuidString),
+        ]
 
+        guard let authURL = components.url else {
+            errorMessage = "Failed to construct authorization URL."
+            return
+        }
+
+        // 2. Initialize Web Authentication Session
         let session = ASWebAuthenticationSession(
-            url: authURL, 
+            url: authURL,
             callbackURLScheme: callbackScheme
-        ) { callbackURL, error in
+        ) { [weak self] callbackURL, error in
+            guard let self else { return }
+
             if let error {
                 let nsError = error as NSError
+                // Ignore user cancellation gracefully
                 if nsError.domain == ASWebAuthenticationSessionError.errorDomain,
-                   nsError.code == ASWebAuthenticationSessionError.canceledLogin.rawValue { return }
+                   nsError.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+                    return
+                }
                 self.errorMessage = error.localizedDescription
                 return
             }
 
-            if let callbackURL,
-               let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
-               let code = components.queryItems?.first(where: { $0.name == "code" })?.value {
-                self.authorizationCode = code
-                // Send code to backend to exchange for an access token
+            // 3. Extract temporary authorization code from callback URL
+            guard let callbackURL,
+                  let components = URLComponents(url: callbackURL, resolvingAgainstBaseURL: false),
+                  let code = components.queryItems?.first(where: { $0.name == "code" })?.value
+            else {
+                self.errorMessage = "No authorization code in callback."
+                return
             }
+
+            // 4. Update state & present authenticated view
+            self.authorizationCode = code
+            self.errorMessage = nil
+            
+            self.authState?.userIdentifier = "GitHub (\(code.prefix(8))...)"
+            self.authState?.displayName = "GitHub User"
+            self.authState?.isAuthenticated = true
         }
-        
+
+        session.prefersEphemeralWebBrowserSession = useEphemeralSession
         session.presentationContextProvider = self
         session.start()
     }
 
+    // MARK: - ASWebAuthenticationPresentationContextProviding
+
     func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        guard let scene = UIApplication.shared.connectedScenes.compactMap({ $0 as? UIWindowScene }).first,
-              let window = scene.windows.first else { fatalError("No window scene available.") }
+        guard let scene = UIApplication.shared.connectedScenes
+            .compactMap({ $0 as? UIWindowScene })
+            .first,
+              let window = scene.windows.first
+        else {
+            fatalError("No window scene available.")
+        }
         return window
     }
 }
 
 ```
 
+---
+
+#### Security & Architecture Notes
+
+> **Production OAuth Flow:**
+> 1. Mobile app receives temporary `authorization_code` from the redirect URL (`simplelogin://oauth-callback?code=...`).
+> 2. Mobile app sends `authorization_code` to **your backend server**.
+> 3. Your server securely exchanges `code` + `client_secret` with the provider (`https://github.com/login/oauth/access_token`).
+> 4. **Never embed `client_secret` inside the iOS binary**, as it can be extracted via reverse engineering.
+> 
+> 
+
+---
+
 #### Required Setup & Configuration
 
-1. **OAuth Application**: Register an OAuth app in your provider's developer console (e.g., GitHub Developer Settings). Set the callback URL to `myapp://oauth-callback`.
-2. **Info.plist Custom Scheme**: In Xcode $\rightarrow$ App Target $\rightarrow$ **Info** tab $\rightarrow$ Expand **URL Types** $\rightarrow$ Add a new item and set **URL Schemes** to `myapp`.
-3. **Client ID**: Copy the generated Client ID from your OAuth provider into `clientID`. Never embed your `client_secret` in the mobile app binary; token exchange must happen server-side.
+1. **OAuth Application Setup (Provider Console)**
+* Register an OAuth App in **GitHub Developer Settings** $\rightarrow$ **OAuth Apps**.
+* **Homepage URL**: `https://YOUR_DOMAIN.web.app` (or your web application URL).
+* **Authorization callback URL**: `simplelogin://oauth-callback` (matching your `OAUTH_CALLBACK_SCHEME`).
+
+
+2. **Xcode Custom URL Scheme**
+* Select Target $\rightarrow$ **Info** tab.
+* Expand **URL Types** $\rightarrow$ Click **+**.
+* Set **URL Schemes** to `simplelogin` *(matching `OAUTH_CALLBACK_SCHEME` without `://`)*.
+
+
+3. **Session Privacy Modes**
+* Default (`prefersEphemeralWebBrowserSession = false`): Shares cookies with Safari, allowing single sign-on if the user is already logged into the provider.
+* Ephemeral (`prefersEphemeralWebBrowserSession = true`): Isolated private browser session with no shared cookies/cache.
+
+
 
 ---
 
@@ -461,6 +621,9 @@ final class WebOAuthViewModel: NSObject, ASWebAuthenticationPresentationContextP
 
 ```swift
 // MARK: - Features/PasswordAutoFill/PasswordAutoFillViewModel.swift
+
+import AuthenticationServices
+import SwiftUI
 
 @Observable
 final class PasswordAutoFillViewModel: NSObject, 
@@ -508,50 +671,7 @@ final class PasswordAutoFillViewModel: NSObject,
 
 ---
 
-## 3. Technical Concepts & Mental Models
-
-### Biometrics vs. Account Relationship
-
-Developers frequently conflate `LAContext` (LocalAuthentication) with `ASAuthorizationAppleIDCredential` (AuthenticationServices). They operate at different layers of the iOS security stack.
-
-| Dimension | `LAContext` (LocalAuthentication) | `ASAuthorizationAppleIDCredential` (AuthenticationServices) |
-| --- | --- | --- |
-| **Mental Model** | 🔐 **Local Gatekeeper**: "Prove you hold this device right now" | 🛂 **Global Passport**: "Prove you own this Apple ID account" |
-| **What It Verifies** | Local biometric or passcode ownership | Apple ID identity via iCloud |
-| **Scope** | Current device only | All devices signed into the Apple ID |
-| **Cryptographic Root** | Secure Enclave (device-bound key) | Apple Identity Service (iCloud-synced token) |
-| **Credential Type** | Boolean (pass/fail) | `ASAuthorizationAppleIDCredential` with JWT, user ID, email |
-| **Network Required** | No | Yes (initial authorization) |
-| **Survives Device Wipe** | No: Secure Enclave keys are destroyed | Yes: credential is tied to Apple ID account |
-| **Returns Identity** | No: confirms local presence only | Yes: returns stable `user` identifier, optional email/name |
-
-**Key distinction**: `LAContext` answers *"Is an authorized user holding this phone right now?"*, while `ASAuthorizationAppleIDCredential` answers *"Which user is this across Apple's entire ecosystem?"*
-
-### Authorizing Identity: OAuth vs. SSO
-
-#### OAuth: "The Bar ID Analogy"
-
-OAuth is a bouncer checking your ID at a bar entrance.
-
-1. You approach the bar (the app).
-2. The bouncer asks for your ID (redirects to identity provider).
-3. You show your driver's license (authenticate with Google/GitHub).
-4. The bouncer verifies your age and lets you in (receives an authorization code).
-5. The bouncer **does not** keep a copy or make a new ID for you. The bar next door must check you independently.
-
-#### SSO: "The Festival Wristband Analogy"
-
-SSO is getting a wristband at a music festival entrance.
-
-1. You show your ticket at the main gate (authenticate once with identity provider).
-2. Staff gives you a wristband (the IdP issues a session token/assertion).
-3. Every stage, food vendor, and VIP tent inspects your wristband and grants access without re-checking your ticket.
-
-**Sign in with Apple operates as a hybrid OAuth-SSO.** It uses OAuth 2.0 protocol mechanics (authorization code grant, token exchange) while providing an SSO experience to the user: a single Apple ID login grants access across all their devices via iCloud.
-
----
-
-## 4. HIG Rules & App Store Review Guidelines
+## 3. HIG Rules & App Store Review Guidelines
 
 These five rules represent the most common causes of App Store rejection for authentication implementations.
 
@@ -579,12 +699,12 @@ Your backend must store these fields immediately alongside the stable `credentia
 
 Any app supporting account creation must provide an in-app account deletion flow. For Sign in with Apple, this requires two actions:
 
-1. Revoke the token via Apple's revocation endpoint (`POST [https://appleid.apple.com/auth/revoke](https://appleid.apple.com/auth/revoke)`).
+1. Revoke the token via Apple's revocation endpoint (`POST https://appleid.apple.com/auth/revoke`).
 2. Delete the user record on your server.
 
 ```swift
 func revokeAppleIDToken(_ refreshToken: String) async throws {
-    let url = URL(string: "https://appleid.apple.com/auth/revoke")!
+    let url = URL(string: "[https://appleid.apple.com/auth/revoke](https://appleid.apple.com/auth/revoke)")!
     var request = URLRequest(url: url)
     request.httpMethod = "POST"
     request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -640,8 +760,12 @@ func biometricDisplayName() -> String {
 
 ## What's Next
 
-**Part 2: Storage Architecture & ASProvider Execution Models** will explore the low-level systems beneath these APIs: how the Secure Enclave generates asymmetric key pairs for passkeys, AES-256-GCM encryption boundaries around Keychain items, sandbox isolation between `kSecAttrAccessGroup` domains, and the `authd` system daemon execution pipeline.
+**Part 2: Deep-Dive Architecture, Mental Models & Storage** will explore the concepts behind these APIs:
 
----
+* **Mental Models & Concepts**: Comparing `LAContext` vs `ASAuthorizationAppleIDCredential`, plus OAuth vs SSO analogies.
+* **Low-Level Execution Pipeline**: How the `authd` system daemon and Secure Enclave coordinate during passkey generation.
+* **Storage & Encryption Boundaries**: How iCloud Keychain handles AES-256-GCM encryption and sandbox isolation across `kSecAttrAccessGroup` domains.
 
-*Questions or feedback on implementing `AuthenticationServices`? Let's discuss in the responses below.*
+```
+
+```

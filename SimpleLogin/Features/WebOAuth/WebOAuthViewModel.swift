@@ -15,9 +15,17 @@ final class WebOAuthViewModel: NSObject, ASWebAuthenticationPresentationContextP
     var authorizationCode: String?
     var errorMessage: String?
     var useEphemeralSession: Bool = false
+    var authState: AuthState?
 
-    private let clientID = "YOUR_GITHUB_CLIENT_ID"
-    private let callbackScheme = "myapp"
+    // 1. Update Client ID with your new GitHub Client ID
+    private let clientID = AppConfig.githubClientID //eg., "Ov2xxxxxxxdT6"
+    
+    // 2. Updated scheme to match GitHub settings and Xcode URL Types
+    private let callbackScheme = AppConfig.oauthCallbackScheme // eg., "simxxxxxx"
+
+    func bindAuthState(_ authState: AuthState) {
+        self.authState = authState
+    }
 
     func startOAuthFlow() {
         var components = URLComponents(string: "https://github.com/login/oauth/authorize")!
@@ -54,8 +62,13 @@ final class WebOAuthViewModel: NSObject, ASWebAuthenticationPresentationContextP
                 return
             }
 
+            // 3. Save code & update authenticated state
             self.authorizationCode = code
             self.errorMessage = nil
+            
+            self.authState?.userIdentifier = "GitHub (\(code.prefix(8))...)"
+            self.authState?.displayName = "GitHub User"
+            self.authState?.isAuthenticated = true
         }
 
         session.prefersEphemeralWebBrowserSession = useEphemeralSession

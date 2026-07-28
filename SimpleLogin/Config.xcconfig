@@ -7,3 +7,7 @@
 
 // Configuration settings file format documentation can be found at:
 // https://developer.apple.com/documentation/xcode/adding-a-build-configuration-file-to-your-project
+
+PASSKEY_RELYING_PARTY_ID = simplelogin-passkeys-dev.web.app
+GITHUB_CLIENT_ID = Ov23liQ9mY8eM8QTCdT6
+OAUTH_CALLBACK_SCHEME = simplelogin

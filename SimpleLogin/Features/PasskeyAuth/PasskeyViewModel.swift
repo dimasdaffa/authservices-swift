@@ -15,7 +15,7 @@ final class PasskeyViewModel: NSObject,
     ASAuthorizationControllerDelegate,
     ASAuthorizationControllerPresentationContextProviding
 {
-    private let relyingPartyIdentifier = "simplelogin-passkeys-dev.web.app"
+    private let relyingPartyIdentifier = AppConfig.passkeyRelyingPartyID // eg., "simplelogixxxxxx.web.app"
     
     var authState: AuthState?
     var errorMessage: String?

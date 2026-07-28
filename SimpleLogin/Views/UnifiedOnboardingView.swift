@@ -42,6 +42,7 @@ struct UnifiedOnboardingView: View {
         .onAppear {
             appleSignInViewModel.bindAuthState(authState)
             passkeyViewModel.bindAuthState(authState)
+            webOAuthViewModel.bindAuthState(authState)
         }
     }
     

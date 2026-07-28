@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>simplelogin</string>
+			</array>
+		</dict>
+	</array>
+	<key>GITHUB_CLIENT_ID</key>
+	<string>$(GITHUB_CLIENT_ID)</string>
+	<key>OAUTH_CALLBACK_SCHEME</key>
+	<string>$(OAUTH_CALLBACK_SCHEME)</string>
+	<key>PASSKEY_RELYING_PARTY_ID</key>
+	<string>$(PASSKEY_RELYING_PARTY_ID)</string>
+</dict>
+</plist>
