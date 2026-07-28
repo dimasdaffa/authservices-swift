@@ -1,0 +1,13 @@
+//
+//  Config.xcconfig
+//  SimpleLogin
+//
+//  Created by DIMAS DAFFA ERNANDA on 28/07/26.
+//
+
+// Configuration settings file format documentation can be found at:
+// https://developer.apple.com/documentation/xcode/adding-a-build-configuration-file-to-your-project
+
+PASSKEY_RELYING_PARTY_ID = // eg., simpxxxxxx.app
+GITHUB_CLIENT_ID = // eg., Oxxxxxx6
+OAUTH_CALLBACK_SCHEME = // eg., simxxxxx
